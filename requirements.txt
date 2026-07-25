@@ -1,0 +1,19 @@
+# FrameFlow AI - Dependencies
+# Core UI
+PySide6>=6.6.0
+
+# Computer Vision
+opencv-python-headless>=4.9.0
+numpy>=1.26.0
+Pillow>=10.0.0
+
+# Frame Analysis
+scikit-image>=0.22.0
+imagehash>=4.3.0
+
+# AI Inference
+onnxruntime>=1.17.0
+# onnxruntime-gpu>=1.17.0  # Uncomment for GPU support
+
+# Video Processing
+ffmpeg-python>=0.2.0

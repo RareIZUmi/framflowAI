@@ -1,0 +1,14 @@
+# FrameFlow AI - Development Dependencies
+-r requirements.txt
+
+# Testing
+pytest>=8.0.0
+pytest-qt>=4.3.0
+pytest-cov>=4.1.0
+
+# Building
+PyInstaller>=6.0.0
+
+# AI Model Export (only needed to regenerate ONNX model)
+# torch>=2.2.0
+# torchvision>=0.17.0
