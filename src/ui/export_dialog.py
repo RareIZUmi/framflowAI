@@ -146,10 +146,13 @@ class ExportDialog(QDialog):
         self._fps_spin.setSpecialValueText("Same as source")
         form.addRow("Output FPS:", self._fps_spin)
 
-        # Audio
-        self._audio_check = QCheckBox("Preserve audio (surgical trim)")
-        self._audio_check.setChecked(True)
-        form.addRow("Audio:", self._audio_check)
+        # Audio info (always stripped)
+        audio_note = QLabel("🔇 Audio is not included in exports (video only)")
+        audio_note.setStyleSheet(
+            "color: #888; font-size: 11px; padding: 4px; "
+            "background: #1A1A1A; border-radius: 4px;"
+        )
+        form.addRow("Audio:", audio_note)
 
     def _setup_image_tab(self, tab: QWidget) -> None:
         form = QFormLayout(tab)
@@ -233,7 +236,7 @@ class ExportDialog(QDialog):
                 codec=codec,
                 crf=self._crf_spin.value(),
                 output_fps=self._fps_spin.value(),
-                preserve_audio=self._audio_check.isChecked(),
+                preserve_audio=False,
                 generate_report_json=self._json_check.isChecked(),
                 generate_report_csv=self._csv_check.isChecked(),
             )

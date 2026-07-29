@@ -1,9 +1,8 @@
 """
 Main application window for FrameFlow AI.
 
-Professional layout inspired by DaVinci Resolve / Premiere Pro.
-Features: menu bar, toolbar, dockable panels, drag-and-drop,
-keyboard shortcuts, status bar, and auto-save.
+Professional layout with compact sidebar, large preview,
+frame review panel, and timeline.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from PySide6.QtCore import QMimeData, QSize, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
@@ -47,6 +47,7 @@ from src.ui.export_dialog import ExportDialog
 from src.ui.import_panel import ImportPanel
 from src.ui.log_viewer import LogViewer
 from src.ui.preview_widget import PreviewWidget
+from src.ui.review_panel import ReviewPanel
 from src.ui.settings_dialog import SettingsDialog
 from src.ui.timeline_widget import TimelineWidget
 from src.utils.constants import (
@@ -82,25 +83,27 @@ class MainWindow(QMainWindow):
     Central application window for FrameFlow AI.
 
     Layout:
-    ┌──────────────────────────────────────────────────┐
-    │  Menu Bar                                        │
-    ├──────────────────────────────────────────────────┤
-    │  Toolbar                                         │
-    ├───────────────────────┬──────────────────────────┤
-    │                       │                          │
-    │   Import / Preview    │    Frame Info / Log      │
-    │                       │                          │
-    ├───────────────────────┴──────────────────────────┤
-    │  Timeline                                        │
-    ├──────────────────────────────────────────────────┤
-    │  Status Bar                                      │
-    └──────────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────────┐
+    │  Menu Bar                                           │
+    ├─────────────────────────────────────────────────────┤
+    │  Toolbar                                            │
+    ├───────────┬─────────────────────────────────────────┤
+    │           │     LARGE PREVIEW                       │
+    │ Sidebar   │     (single frame + badge)              │
+    │ (file     ├─────────────────────────────────────────┤
+    │  info +   │  Frame Review Panel                     │
+    │  stats)   │  [◀ Prev] KEEP/REMOVE [Next ▶]         │
+    ├───────────┴─────────────────────────────────────────┤
+    │  Timeline (color-coded, zoomable)                   │
+    ├─────────────────────────────────────────────────────┤
+    │  Status Bar                                         │
+    └─────────────────────────────────────────────────────┘
     """
 
     # Signals
     processing_started = Signal()
     processing_finished = Signal()
-    processing_progress = Signal(float, str)  # progress, message
+    processing_progress = Signal(float, str)
     frame_selected = Signal(int)
 
     def __init__(self) -> None:
@@ -135,16 +138,11 @@ class MainWindow(QMainWindow):
         self._setup_menu_bar()
         self._setup_toolbar()
         self._setup_status_bar()
-        self._setup_shortcuts()
 
         # ── Auto-save timer ────────────────────────────────────────────
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._auto_save_session)
         self._autosave_timer.start(AUTOSAVE_INTERVAL_MS)
-
-        # ── Window state restore disabled ─────────────────────────────────
-        # Positioning is handled by app.py _center_on_screen() for reliability.
-        # self._restore_window_state()
 
         # ── Initialize AI (async) ──────────────────────────────────────
         if self._settings.get("detection.enable_ai_mode", True):
@@ -157,62 +155,64 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════
 
     def _setup_ui(self) -> None:
-        """Create the main layout with dockable panels."""
+        """Create the main layout: sidebar + preview/review + timeline."""
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── Top splitter: Import/Preview + Info ────────────────────────
-        top_splitter = QSplitter(Qt.Orientation.Horizontal)
+        # ── Horizontal: Sidebar + Content ──────────────────────────────
+        h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left: Import panel + Preview
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(4, 4, 4, 4)
-        left_layout.setSpacing(4)
-
+        # Left: Compact sidebar
         self._import_panel = ImportPanel()
         self._import_panel.file_dropped.connect(self._on_file_dropped)
         self._import_panel.import_clicked.connect(self._on_import_clicked)
+        h_splitter.addWidget(self._import_panel)
 
+        # Right: Preview + Review (vertical split)
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        # Preview (large)
         self._preview = PreviewWidget()
         self._preview.setMinimumHeight(300)
+        self._preview.frame_changed.connect(self._on_preview_frame_changed)
+        right_layout.addWidget(self._preview, stretch=3)
 
-        left_layout.addWidget(self._import_panel)
-        left_layout.addWidget(self._preview, stretch=1)
+        # Frame Review Panel
+        self._review_panel = ReviewPanel()
+        self._review_panel.frame_decision_changed.connect(self._on_review_decision_changed)
+        self._review_panel.frame_selected.connect(self._on_review_frame_selected)
+        self._review_panel.setMinimumHeight(180)
+        self._review_panel.setMaximumHeight(350)
+        right_layout.addWidget(self._review_panel, stretch=1)
 
-        # Right: Batch panel + Log viewer
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(4, 4, 4, 4)
-        right_layout.setSpacing(4)
+        h_splitter.addWidget(right_widget)
+        h_splitter.setSizes([260, 1000])
+        # Make sidebar non-collapsible and fixed
+        h_splitter.setCollapsible(0, False)
 
-        self._batch_panel = BatchPanel()
-        self._log_viewer = LogViewer()
+        # ── Vertical: Content + Timeline ───────────────────────────────
+        v_splitter = QSplitter(Qt.Orientation.Vertical)
+        v_splitter.addWidget(h_splitter)
 
-        right_layout.addWidget(self._batch_panel, stretch=1)
-        right_layout.addWidget(self._log_viewer, stretch=1)
-
-        top_splitter.addWidget(left_panel)
-        top_splitter.addWidget(right_panel)
-        top_splitter.setSizes([800, 400])
-
-        # ── Bottom: Timeline ───────────────────────────────────────────
         self._timeline = TimelineWidget()
         self._timeline.setMinimumHeight(80)
         self._timeline.setMaximumHeight(200)
         self._timeline.frame_clicked.connect(self._on_timeline_frame_clicked)
         self._timeline.frame_decision_changed.connect(self._on_frame_decision_changed)
+        v_splitter.addWidget(self._timeline)
+        v_splitter.setSizes([700, 120])
 
-        # ── Main splitter: Top + Timeline ──────────────────────────────
-        main_splitter = QSplitter(Qt.Orientation.Vertical)
-        main_splitter.addWidget(top_splitter)
-        main_splitter.addWidget(self._timeline)
-        main_splitter.setSizes([600, 120])
+        main_layout.addWidget(v_splitter)
 
-        main_layout.addWidget(main_splitter)
+        # ── Popup panels (hidden, accessible via View menu) ────────────
+        self._batch_panel = BatchPanel()
+        self._log_viewer = LogViewer()
 
     def _setup_menu_bar(self) -> None:
         """Create the menu bar."""
@@ -226,7 +226,6 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self._on_import_clicked)
         file_menu.addAction(open_action)
 
-        # Recent files submenu
         self._recent_menu = file_menu.addMenu("Recent Files")
         self._update_recent_files_menu()
 
@@ -268,12 +267,16 @@ class MainWindow(QMainWindow):
 
         keep_action = QAction("&Keep Selected Frame", self)
         keep_action.setShortcut(QKeySequence(SHORTCUTS["toggle_keep"]))
-        keep_action.triggered.connect(lambda: self._set_selected_frame_decision(FrameDecision.KEEP))
+        keep_action.triggered.connect(
+            lambda: self._set_selected_frame_decision(FrameDecision.KEEP)
+        )
         edit_menu.addAction(keep_action)
 
         remove_action = QAction("&Remove Selected Frame", self)
         remove_action.setShortcut(QKeySequence(SHORTCUTS["toggle_remove"]))
-        remove_action.triggered.connect(lambda: self._set_selected_frame_decision(FrameDecision.REMOVE))
+        remove_action.triggered.connect(
+            lambda: self._set_selected_frame_decision(FrameDecision.REMOVE)
+        )
         edit_menu.addAction(remove_action)
 
         # ── Process menu ──────────────────────────────────────────────
@@ -304,6 +307,16 @@ class MainWindow(QMainWindow):
         zoom_out_action.triggered.connect(self._on_zoom_out)
         view_menu.addAction(zoom_out_action)
 
+        view_menu.addSeparator()
+
+        batch_action = QAction("&Batch Queue...", self)
+        batch_action.triggered.connect(self._show_batch_dialog)
+        view_menu.addAction(batch_action)
+
+        log_action = QAction("&Log Viewer...", self)
+        log_action.triggered.connect(self._show_log_dialog)
+        view_menu.addAction(log_action)
+
         # ── Help menu ────────────────────────────────────────────────
         help_menu = menubar.addMenu("&Help")
 
@@ -312,10 +325,31 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
     def _setup_toolbar(self) -> None:
-        """Create the main toolbar."""
+        """Create the main toolbar with larger, cleaner buttons."""
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
-        toolbar.setIconSize(QSize(20, 20))
+        toolbar.setIconSize(QSize(22, 22))
+        toolbar.setStyleSheet("""
+            QToolBar {
+                spacing: 4px;
+                padding: 4px 8px;
+                background: #1A1A1A;
+                border-bottom: 1px solid #333;
+            }
+            QToolBar QToolButton {
+                font-size: 12px;
+                padding: 6px 14px;
+                border-radius: 4px;
+                color: #CCC;
+            }
+            QToolBar QToolButton:hover {
+                background: #2D2D2D;
+            }
+            QToolBar QToolButton:pressed {
+                background: #00BCD4;
+                color: white;
+            }
+        """)
         self.addToolBar(toolbar)
 
         self._btn_open = toolbar.addAction("📂 Open")
@@ -329,17 +363,6 @@ class MainWindow(QMainWindow):
         self._btn_stop = toolbar.addAction("⏹ Stop")
         self._btn_stop.triggered.connect(self._on_stop_analysis)
         self._btn_stop.setEnabled(False)
-
-        toolbar.addSeparator()
-
-        self._btn_play = toolbar.addAction("▶ Play")
-        self._btn_play.triggered.connect(self._on_play_pause)
-
-        self._btn_prev = toolbar.addAction("◀ Prev")
-        self._btn_prev.triggered.connect(self._on_frame_backward)
-
-        self._btn_next = toolbar.addAction("▶ Next")
-        self._btn_next.triggered.connect(self._on_frame_forward)
 
         toolbar.addSeparator()
 
@@ -360,6 +383,7 @@ class MainWindow(QMainWindow):
         self._status_bar.addWidget(self._status_label, stretch=1)
 
         self._gpu_label = QLabel("")
+        self._gpu_label.setStyleSheet("color: #666; font-size: 11px;")
         self._status_bar.addPermanentWidget(self._gpu_label)
 
         self._progress_bar = QProgressBar()
@@ -370,10 +394,6 @@ class MainWindow(QMainWindow):
 
         self._frame_label = QLabel("")
         self._status_bar.addPermanentWidget(self._frame_label)
-
-    def _setup_shortcuts(self) -> None:
-        """Configure additional keyboard shortcuts."""
-        pass  # Shortcuts are already bound via menu actions
 
     # ══════════════════════════════════════════════════════════════════
     # Drag and Drop
@@ -427,8 +447,10 @@ class MainWindow(QMainWindow):
 
             # Update panels
             self._import_panel.set_video_info(video)
+            self._import_panel.clear_stats()
             self._preview.set_video(video, self._extractor)
             self._timeline.clear()
+            self._review_panel.clear()
 
             # Add to recent files
             self._add_recent_file(path)
@@ -487,12 +509,12 @@ class MainWindow(QMainWindow):
             total_frames=self._video.frame_count,
         )
 
-        # Run analysis (using Qt timer for non-blocking processing)
+        # Run analysis
         self._analysis_frame_index = 0
         self._analysis_prev_frame = None
         self._analysis_timer = QTimer(self)
         self._analysis_timer.timeout.connect(self._process_next_batch)
-        self._analysis_timer.start(0)  # Process as fast as possible
+        self._analysis_timer.start(0)
 
         self._status_label.setText("Analyzing frames...")
         logger.info("Analysis started for %s", self._video.path.name)
@@ -508,7 +530,7 @@ class MainWindow(QMainWindow):
             self._finish_analysis()
             return
 
-        batch_size = 10  # Frames per UI tick
+        batch_size = 10
         total = self._video.frame_count
 
         for _ in range(batch_size):
@@ -518,7 +540,6 @@ class MainWindow(QMainWindow):
                 return
 
             if idx == 0:
-                # First frame is always kept
                 analysis = self._detector.analyze_first_frame(0)
                 self._analyses.append(analysis)
                 frame = self._extractor.get_frame(0)
@@ -534,12 +555,9 @@ class MainWindow(QMainWindow):
                 )
                 self._analyses.append(analysis)
 
-                # Only update prev_frame if current frame is NOT a dead frame
-                # This way we compare against the last unique frame
                 if analysis.decision != FrameDecision.REMOVE:
                     self._analysis_prev_frame = curr_frame
 
-                # Update stats
                 if self._stats:
                     self._stats.frames_analyzed += 1
                     if analysis.decision == FrameDecision.KEEP:
@@ -575,21 +593,30 @@ class MainWindow(QMainWindow):
         if self._stats:
             self._stats.finalize()
 
-        # Update timeline with final results
+        # Update all panels with final results
         self._timeline.set_analyses(self._analyses)
+        self._preview.set_analyses(self._analyses)
+        self._review_panel.set_data(self._analyses, self._extractor)
 
-        # Status summary
-        if self._stats and self._analyses:
-            kept = sum(1 for a in self._analyses if a.decision in (FrameDecision.KEEP, FrameDecision.SCENE_BOUNDARY))
+        # Update sidebar stats
+        if self._analyses:
+            kept = sum(1 for a in self._analyses if a.decision in (
+                FrameDecision.KEEP, FrameDecision.SCENE_BOUNDARY
+            ))
             removed = sum(1 for a in self._analyses if a.decision == FrameDecision.REMOVE)
             uncertain = sum(1 for a in self._analyses if a.decision == FrameDecision.UNCERTAIN)
+            scenes = sum(1 for a in self._analyses if a.is_scene_boundary)
+            self._import_panel.set_stats(kept, removed, uncertain, scenes)
+
             self._status_label.setText(
                 f"Analysis complete: {kept:,} kept, {removed:,} removed, "
-                f"{uncertain:,} uncertain | {self._stats.fps_processing:.1f} fps"
+                f"{uncertain:,} uncertain | "
+                f"{self._stats.fps_processing:.1f} fps" if self._stats else ""
             )
             self._log_viewer.append_log(
                 f"Analysis complete: {len(self._analyses):,} frames analyzed in "
-                f"{self._stats.elapsed_seconds:.1f}s"
+                f"{self._stats.elapsed_seconds:.1f}s" if self._stats else
+                f"Analysis complete: {len(self._analyses):,} frames"
             )
         else:
             self._status_label.setText("Analysis cancelled.")
@@ -616,6 +643,9 @@ class MainWindow(QMainWindow):
         self._redo_stack.clear()
         self._analyses[idx].decision = decision
         self._timeline.update_frame(idx, decision)
+        self._preview.set_analyses(self._analyses)
+        self._review_panel.refresh()
+        self._update_sidebar_stats()
         logger.debug("Frame %d: %s → %s (manual)", idx, old_decision.name, decision.name)
 
     @Slot()
@@ -627,6 +657,9 @@ class MainWindow(QMainWindow):
         self._redo_stack.append((idx, current))
         self._analyses[idx].decision = old_decision
         self._timeline.update_frame(idx, old_decision)
+        self._preview.set_analyses(self._analyses)
+        self._review_panel.refresh()
+        self._update_sidebar_stats()
 
     @Slot()
     def _on_redo(self) -> None:
@@ -637,6 +670,9 @@ class MainWindow(QMainWindow):
         self._undo_stack.append((idx, current))
         self._analyses[idx].decision = decision
         self._timeline.update_frame(idx, decision)
+        self._preview.set_analyses(self._analyses)
+        self._review_panel.refresh()
+        self._update_sidebar_stats()
 
     @Slot(int, str)
     def _on_frame_decision_changed(self, index: int, decision_name: str) -> None:
@@ -647,6 +683,33 @@ class MainWindow(QMainWindow):
             self._undo_stack.append((index, old))
             self._redo_stack.clear()
             self._analyses[index].decision = new_decision
+            self._preview.set_analyses(self._analyses)
+            self._review_panel.refresh()
+            self._update_sidebar_stats()
+
+    @Slot(int, str)
+    def _on_review_decision_changed(self, index: int, decision_name: str) -> None:
+        """Handle decision changes from the review panel."""
+        if 0 <= index < len(self._analyses):
+            old = self._analyses[index].decision
+            new_decision = FrameDecision[decision_name]
+            self._undo_stack.append((index, old))
+            self._redo_stack.clear()
+            self._analyses[index].decision = new_decision
+            self._timeline.update_frame(index, new_decision)
+            self._preview.set_analyses(self._analyses)
+            self._update_sidebar_stats()
+
+    def _update_sidebar_stats(self) -> None:
+        """Refresh the sidebar stats from current analyses."""
+        if self._analyses:
+            kept = sum(1 for a in self._analyses if a.decision in (
+                FrameDecision.KEEP, FrameDecision.SCENE_BOUNDARY
+            ))
+            removed = sum(1 for a in self._analyses if a.decision == FrameDecision.REMOVE)
+            uncertain = sum(1 for a in self._analyses if a.decision == FrameDecision.UNCERTAIN)
+            scenes = sum(1 for a in self._analyses if a.is_scene_boundary)
+            self._import_panel.set_stats(kept, removed, uncertain, scenes)
 
     # ══════════════════════════════════════════════════════════════════
     # Timeline & Preview Interaction
@@ -664,17 +727,17 @@ class MainWindow(QMainWindow):
                     f"{a.decision.name}"
                 )
 
-    @Slot()
-    def _on_play_pause(self) -> None:
-        self._preview.toggle_playback()
+    @Slot(int)
+    def _on_preview_frame_changed(self, index: int) -> None:
+        """Sync timeline selection when preview frame changes."""
+        self._timeline.set_selected_frame(index)
 
-    @Slot()
-    def _on_frame_forward(self) -> None:
-        self._preview.step_forward()
-
-    @Slot()
-    def _on_frame_backward(self) -> None:
-        self._preview.step_backward()
+    @Slot(int)
+    def _on_review_frame_selected(self, index: int) -> None:
+        """Navigate to frame from review panel."""
+        if self._extractor:
+            self._preview.show_frame(index)
+            self._timeline.set_selected_frame(index)
 
     @Slot()
     def _on_zoom_in(self) -> None:
@@ -683,6 +746,33 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_zoom_out(self) -> None:
         self._timeline.zoom_out()
+
+    # ══════════════════════════════════════════════════════════════════
+    # View Menu Dialogs
+    # ══════════════════════════════════════════════════════════════════
+
+    @Slot()
+    def _show_batch_dialog(self) -> None:
+        """Show batch queue in a popup dialog."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Batch Queue")
+        dlg.setMinimumSize(500, 400)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(self._batch_panel)
+        dlg.exec()
+        # Re-parent back after dialog closes
+        self._batch_panel.setParent(None)
+
+    @Slot()
+    def _show_log_dialog(self) -> None:
+        """Show log viewer in a popup dialog."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Log Viewer")
+        dlg.setMinimumSize(600, 400)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(self._log_viewer)
+        dlg.exec()
+        self._log_viewer.setParent(None)
 
     # ══════════════════════════════════════════════════════════════════
     # Export
@@ -733,10 +823,15 @@ class MainWindow(QMainWindow):
         if success:
             self._status_label.setText(f"Export complete: {config.output_path}")
             self._log_viewer.append_log(f"Exported to: {config.output_path}")
-            QMessageBox.information(self, "Export Complete", f"Saved to:\n{config.output_path}")
+            QMessageBox.information(
+                self, "Export Complete", f"Saved to:\n{config.output_path}"
+            )
         else:
             self._status_label.setText("Export failed.")
-            QMessageBox.warning(self, "Export Failed", "Export encountered an error. Check logs.")
+            QMessageBox.warning(
+                self, "Export Failed",
+                "Export encountered an error. Check logs.",
+            )
 
     # ══════════════════════════════════════════════════════════════════
     # Settings
@@ -758,12 +853,18 @@ class MainWindow(QMainWindow):
             self._ai_detector = AIDetector(gpu_enabled=gpu_enabled)
             if self._ai_detector.available:
                 self._gpu_label.setText("🤖 AI Ready")
+                self._gpu_label.setStyleSheet(
+                    "color: #4CAF50; font-size: 11px;"
+                )
                 logger.info("AI detector initialized successfully.")
             else:
-                self._gpu_label.setText("🤖 AI Model Missing")
+                self._gpu_label.setText("AI: Optional model not installed")
+                self._gpu_label.setStyleSheet(
+                    "color: #666; font-size: 11px;"
+                )
         except Exception as exc:
             logger.warning("AI detector initialization failed: %s", exc)
-            self._gpu_label.setText("🤖 AI Unavailable")
+            self._gpu_label.setText("")
 
     # ══════════════════════════════════════════════════════════════════
     # Recent Files
@@ -813,26 +914,14 @@ class MainWindow(QMainWindow):
     def _auto_save_session(self) -> None:
         """Periodically save session state."""
         geom = self.geometry()
-        self._settings.set("ui.window_geometry", [geom.x(), geom.y(), geom.width(), geom.height()])
-        self._settings.set("ui.window_state", "maximized" if self.isMaximized() else "normal")
-
-    def _restore_window_state(self) -> None:
-        geom = self._settings.get("ui.window_geometry")
-        if geom and isinstance(geom, list) and len(geom) == 4:
-            x, y, w, h = geom
-            # Validate the geometry is on a visible screen
-            screen = QApplication.primaryScreen()
-            if screen:
-                avail = screen.availableGeometry()
-                # Only restore if the saved position is within screen bounds
-                if (avail.contains(x, y) and w > 100 and h > 100
-                        and w <= avail.width() * 2 and h <= avail.height() * 2):
-                    self.setGeometry(x, y, w, h)
-                else:
-                    logger.debug("Ignoring saved geometry (off-screen): %s", geom)
-        state = self._settings.get("ui.window_state")
-        if state == "maximized":
-            self.showMaximized()
+        self._settings.set(
+            "ui.window_geometry",
+            [geom.x(), geom.y(), geom.width(), geom.height()],
+        )
+        self._settings.set(
+            "ui.window_state",
+            "maximized" if self.isMaximized() else "normal",
+        )
 
     # ══════════════════════════════════════════════════════════════════
     # About
@@ -845,7 +934,7 @@ class MainWindow(QMainWindow):
             "About FrameFlow AI",
             "<h2>FrameFlow AI</h2>"
             "<p>Intelligent Dead Frame Remover for Video Editors</p>"
-            "<p>Version 1.0.0</p>"
+            "<p>Version 1.1.0</p>"
             "<p>Detects and removes duplicate animation frames using "
             "SSIM, pHash, Histogram, Optical Flow, and DINOv2 AI.</p>"
             "<hr>"

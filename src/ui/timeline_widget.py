@@ -314,6 +314,18 @@ class TimelineWidget(QWidget):
     def selected_frame_index(self) -> int:
         return self._canvas.selected_index
 
+    def set_selected_frame(self, index: int) -> None:
+        """Programmatically select a frame on the timeline."""
+        self._canvas._selected_index = index
+        self._canvas.update()
+        # Scroll to make the selected frame visible
+        bar_w = self._canvas._bar_width
+        x_pos = int(index * bar_w)
+        scroll_bar = self._scroll.horizontalScrollBar()
+        viewport_w = self._scroll.viewport().width()
+        if x_pos < scroll_bar.value() or x_pos > scroll_bar.value() + viewport_w:
+            scroll_bar.setValue(max(0, x_pos - viewport_w // 2))
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Zoom on Ctrl+Scroll, horizontal scroll otherwise."""
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:

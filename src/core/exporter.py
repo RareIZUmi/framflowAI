@@ -46,7 +46,7 @@ class ExportConfig:
         output_fps: float = 0.0,  # 0 = same as source
         crf: int = 18,
         pixel_format: str = "yuv420p",
-        preserve_audio: bool = True,
+        preserve_audio: bool = False,
         image_format: ImageFormat | None = None,  # None = export video
         image_quality: int = 95,  # JPEG quality
         generate_report_json: bool = True,
